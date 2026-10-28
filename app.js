@@ -629,7 +629,13 @@ setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
 setInterval(() => { if (!document.hidden && !state.loading) renderSync(); }, 15000);
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Reload once when a new version of the app takes over, so updates show without closing the app.
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController && !reloaded) { reloaded = true; location.reload(); }
+  });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => reg.update()).catch(() => {});
 }
 
 applyTheme();
