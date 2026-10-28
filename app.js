@@ -7,10 +7,10 @@
 const DEFAULTS = { owner: 'tjl0025au', repo: 'claude-agents', branch: 'main' };
 const POLL_MS = 30000;
 const STALL_MS = 45 * 60 * 1000;
-const ACTIVE_ROUND = ['planning', 'awaiting-approval', 'scouting', 'reviewing', 'reporting'];
+const ACTIVE_ROUND = ['planning', 'awaiting-approval', 'scouting', 'reviewing', 'innovating', 'reporting'];
 const ROUND_LABEL = {
   planning: 'Planning', 'awaiting-approval': 'Waiting for you', scouting: 'Scouting',
-  reviewing: 'Reviewing', reporting: 'Reporting', done: 'Done', failed: 'Failed'
+  reviewing: 'Reviewing', innovating: 'Innovating', reporting: 'Reporting', done: 'Done', failed: 'Failed'
 };
 const STAGES = ['New', 'Sent to Skeptic/Finance', 'Pursue', 'Rework', 'Set aside', 'Spun off'];
 const STAGE_COLOR = {
@@ -22,7 +22,7 @@ const STAGE_COLOR = {
 // anything in .claude/agents that isn't listed here shows under "Other".
 const ORG = [
   { dept: 'Research', members: [
-    { id: 'head-of-research', title: 'Head of Research', skill: true, children: ['idea-scout'] }
+    { id: 'head-of-research', title: 'Head of Research', skill: true, children: ['idea-scout', 'innovator'] }
   ] },
   { dept: 'Review', members: [{ id: 'skeptic' }, { id: 'finance-analyst' }, { id: 'marketer' }] },
   { dept: 'Build', members: [{ id: 'engineer' }, { id: 'qa-reviewer' }, { id: 'repo-manager' }] }
@@ -188,6 +188,13 @@ function isStalled(r) {
   return ACTIVE_ROUND.includes(r.state) && r.updatedAt && Date.now() - new Date(r.updatedAt) > STALL_MS;
 }
 function activeRounds() { return rounds().filter(r => ACTIVE_ROUND.includes(r.state)); }
+// "Loop 2 of 3" for rounds that run the scout → innovator loop; older rounds have no loop.
+function loopLabel(r) {
+  const n = parseInt(r.loop, 10);
+  if (!(n > 0)) return '';
+  const max = parseInt(r.maxLoops, 10);
+  return max > 0 ? `Loop ${n} of ${max}` : `Loop ${n}`;
+}
 
 function roleStatus(id) {
   const act = activeRounds();
@@ -195,7 +202,8 @@ function roleStatus(id) {
     if (!act.length) return { cls: 'idle', label: 'Idle' };
     if (act.some(r => r.state === 'awaiting-approval')) return { cls: 'waiting', label: 'Waiting for you' };
     if (act.every(isStalled)) return { cls: 'stalled', label: 'Stalled?' };
-    return { cls: 'working', label: id === 'chief-of-staff' ? 'Running a round' : ROUND_LABEL[act[0].state] };
+    const loop = loopLabel(act[0]);
+    return { cls: 'working', label: id === 'chief-of-staff' ? 'Running a round' : (ROUND_LABEL[act[0].state] || act[0].state) + (loop ? ' · ' + loop : '') };
   }
   const ws = act.filter(r => !isStalled(r)).flatMap(r => r.workers || []).filter(w => w.role === id);
   const working = ws.filter(w => w.state === 'working').length;
@@ -234,7 +242,7 @@ function viewOrg() {
     const r = act[0];
     const ws = r.workers || [];
     const done = ws.filter(w => w.state === 'done').length;
-    html += `<div class="banner"><b>${isStalled(r) ? 'Stalled?' : 'Live'}</b> · ${esc(r.title || r.id)}: ${esc(ROUND_LABEL[r.state] || r.state)}${ws.length ? ` (${done}/${ws.length} done)` : ''}<div class="small muted">${esc(r.note || '')}</div></div>`;
+    html += `<div class="banner"><b>${isStalled(r) ? 'Stalled?' : 'Live'}</b> · ${esc(r.title || r.id)}: ${esc(ROUND_LABEL[r.state] || r.state)}${loopLabel(r) ? ' · ' + esc(loopLabel(r)) : ''}${ws.length ? ` (${done}/${ws.length} done)` : ''}<div class="small muted">${esc(r.note || '')}</div></div>`;
   }
   html += '<div class="org">';
   html += `<div class="node lead" style="cursor:default"><span><span class="name">Founder</span><br><span class="sub">You</span></span></div><div class="connector"></div>`;
@@ -271,10 +279,10 @@ function viewResearch() {
         <div class="row"><b>${esc(w.label || titleCase(w.role || 'worker'))}</b>${workerPill(w)}</div>
         <div class="small">${esc(w.direction || '')}</div>
         ${w.summary ? `<div class="small muted" style="margin-top:4px">${esc(w.summary)}</div>` : ''}
-        <div class="small muted" style="margin-top:2px">${esc(titleCase(w.role || ''))}${w.startedAt ? ' · ' + esc(duration(w.startedAt, w.finishedAt)) : ''}</div>
+        <div class="small muted" style="margin-top:2px">${esc(titleCase(w.role || ''))}${w.loop ? ' · Loop ' + esc(w.loop) : ''}${w.startedAt ? ' · ' + esc(duration(w.startedAt, w.finishedAt)) : ''}</div>
       </div>`).join('');
     const head = `<div class="row"><b>${esc(r.title || r.id)}</b>${roundPill(r)}</div>
-      <div class="small muted">${r.theme ? 'Theme: ' + esc(r.theme) + ' · ' : ''}updated ${esc(ago(r.updatedAt))}</div>
+      <div class="small muted">${loopLabel(r) ? esc(loopLabel(r)) + ' · ' : ''}${r.theme ? 'Theme: ' + esc(r.theme) + ' · ' : ''}updated ${esc(ago(r.updatedAt))}</div>
       ${r.note ? `<div class="small" style="margin-top:6px">${esc(r.note)}</div>` : ''}
       ${ws.length ? `<div class="progress"><i style="width:${pct}%"></i></div><div class="small muted">${done} of ${ws.length} workers finished</div>` : ''}`;
     // Open the newest round; older ones collapse.

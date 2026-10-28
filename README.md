@@ -12,7 +12,8 @@ in that phone's browser.
 - **Org chart**: Founder, Chief of Staff and every agent, lit up while they work
   in a research round. Tap any box for its description, tools, recent work and
   full instructions.
-- **Research**: live and past rounds from `status/live.json`, each worker's
+- **Research**: live and past rounds from `status/live.json`, which loop of the
+  scout → innovator loop each round is on (e.g. "Loop 2 of 3"), and each worker's
   direction, state and best find. Rounds not updated for 45 minutes show "Stalled?".
 - **New ideas**: opportunities from `research/ideas-log.md` (New, latest round, or all),
   plus the directions explored so far.
