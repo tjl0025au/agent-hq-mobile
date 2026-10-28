@@ -7,10 +7,10 @@
 const DEFAULTS = { owner: 'tjl0025au', repo: 'claude-agents', branch: 'main' };
 const POLL_MS = 30000;
 const STALL_MS = 45 * 60 * 1000;
-const ACTIVE_ROUND = ['planning', 'awaiting-approval', 'scouting', 'reviewing', 'reporting'];
+const ACTIVE_ROUND = ['planning', 'awaiting-approval', 'scouting', 'reviewing', 'innovating', 'reporting'];
 const ROUND_LABEL = {
   planning: 'Planning', 'awaiting-approval': 'Waiting for you', scouting: 'Scouting',
-  reviewing: 'Reviewing', reporting: 'Reporting', done: 'Done', failed: 'Failed'
+  reviewing: 'Reviewing', innovating: 'Innovating', reporting: 'Reporting', done: 'Done', failed: 'Failed'
 };
 const STAGES = ['New', 'Sent to Skeptic/Finance', 'Pursue', 'Rework', 'Set aside', 'Spun off'];
 const STAGE_COLOR = {
@@ -22,11 +22,14 @@ const STAGE_COLOR = {
 // anything in .claude/agents that isn't listed here shows under "Other".
 const ORG = [
   { dept: 'Research', members: [
-    { id: 'head-of-research', title: 'Head of Research', skill: true, children: ['idea-scout'] }
+    { id: 'head-of-research', title: 'Head of Research', skill: true, children: ['idea-scout', 'innovator'] }
   ] },
   { dept: 'Review', members: [{ id: 'skeptic' }, { id: 'finance-analyst' }, { id: 'marketer' }] },
   { dept: 'Build', members: [{ id: 'engineer' }, { id: 'qa-reviewer' }, { id: 'repo-manager' }] }
 ];
+
+// Innovation map: ideas the Innovator brought together and where each route led.
+const PROMISE_ORDER = { High: 0, Medium: 1, Low: 2 };
 
 const store = {
   get(k, fallback) {
@@ -39,9 +42,10 @@ const store = {
 const state = {
   tab: store.get('tab', 'org'),
   ideaFilter: store.get('ideaFilter', 'New'),
+  innoRound: store.get('innoRound', ''),
   settings: Object.assign({}, DEFAULTS, store.get('settings', {})),
   token: store.get('token', ''),
-  data: store.get('data', null), // { live, ideas, agents, fetchedAt }
+  data: store.get('data', null), // { live, ideas, agents, innovation, fetchedAt }
   error: null,
   loading: false
 };
@@ -157,16 +161,21 @@ async function refresh(full = false) {
   renderSync();
   try {
     const needAgents = full || !state.data || !state.data.agents;
-    const [liveText, ideasMd, agents] = await Promise.all([
+    const [liveText, ideasMd, mapText, agents] = await Promise.all([
       gh('status/live.json'),
       gh('research/ideas-log.md'),
+      gh('research/innovation-map.json'),
       needAgents ? loadAgents() : Promise.resolve(state.data.agents)
     ]);
     let live = { rounds: [] };
     if (liveText) {
       try { live = JSON.parse(liveText); } catch { throw new Error('status/live.json is not valid JSON right now.'); }
     }
-    state.data = { live, ideas: parseIdeasLog(ideasMd), agents, fetchedAt: new Date().toISOString() };
+    let innovation = { rounds: [] };
+    if (mapText) {
+      try { innovation = JSON.parse(mapText); } catch { innovation = { rounds: [], error: 'research/innovation-map.json is not valid JSON right now.' }; }
+    }
+    state.data = { live, ideas: parseIdeasLog(ideasMd), innovation, agents, fetchedAt: new Date().toISOString() };
     store.set('data', state.data);
     state.error = null;
   } catch (e) {
@@ -188,6 +197,13 @@ function isStalled(r) {
   return ACTIVE_ROUND.includes(r.state) && r.updatedAt && Date.now() - new Date(r.updatedAt) > STALL_MS;
 }
 function activeRounds() { return rounds().filter(r => ACTIVE_ROUND.includes(r.state)); }
+// "Loop 2 of 3" for rounds that run the scout → innovator loop; older rounds have no loop.
+function loopLabel(r) {
+  const n = parseInt(r.loop, 10);
+  if (!(n > 0)) return '';
+  const max = parseInt(r.maxLoops, 10);
+  return max > 0 ? `Loop ${n} of ${max}` : `Loop ${n}`;
+}
 
 function roleStatus(id) {
   const act = activeRounds();
@@ -195,7 +211,8 @@ function roleStatus(id) {
     if (!act.length) return { cls: 'idle', label: 'Idle' };
     if (act.some(r => r.state === 'awaiting-approval')) return { cls: 'waiting', label: 'Waiting for you' };
     if (act.every(isStalled)) return { cls: 'stalled', label: 'Stalled?' };
-    return { cls: 'working', label: id === 'chief-of-staff' ? 'Running a round' : ROUND_LABEL[act[0].state] };
+    const loop = loopLabel(act[0]);
+    return { cls: 'working', label: id === 'chief-of-staff' ? 'Running a round' : (ROUND_LABEL[act[0].state] || act[0].state) + (loop ? ' · ' + loop : '') };
   }
   const ws = act.filter(r => !isStalled(r)).flatMap(r => r.workers || []).filter(w => w.role === id);
   const working = ws.filter(w => w.state === 'working').length;
@@ -234,7 +251,7 @@ function viewOrg() {
     const r = act[0];
     const ws = r.workers || [];
     const done = ws.filter(w => w.state === 'done').length;
-    html += `<div class="banner"><b>${isStalled(r) ? 'Stalled?' : 'Live'}</b> · ${esc(r.title || r.id)}: ${esc(ROUND_LABEL[r.state] || r.state)}${ws.length ? ` (${done}/${ws.length} done)` : ''}<div class="small muted">${esc(r.note || '')}</div></div>`;
+    html += `<div class="banner"><b>${isStalled(r) ? 'Stalled?' : 'Live'}</b> · ${esc(r.title || r.id)}: ${esc(ROUND_LABEL[r.state] || r.state)}${loopLabel(r) ? ' · ' + esc(loopLabel(r)) : ''}${ws.length ? ` (${done}/${ws.length} done)` : ''}<div class="small muted">${esc(r.note || '')}</div></div>`;
   }
   html += '<div class="org">';
   html += `<div class="node lead" style="cursor:default"><span><span class="name">Founder</span><br><span class="sub">You</span></span></div><div class="connector"></div>`;
@@ -271,10 +288,10 @@ function viewResearch() {
         <div class="row"><b>${esc(w.label || titleCase(w.role || 'worker'))}</b>${workerPill(w)}</div>
         <div class="small">${esc(w.direction || '')}</div>
         ${w.summary ? `<div class="small muted" style="margin-top:4px">${esc(w.summary)}</div>` : ''}
-        <div class="small muted" style="margin-top:2px">${esc(titleCase(w.role || ''))}${w.startedAt ? ' · ' + esc(duration(w.startedAt, w.finishedAt)) : ''}</div>
+        <div class="small muted" style="margin-top:2px">${esc(titleCase(w.role || ''))}${w.loop ? ' · Loop ' + esc(w.loop) : ''}${w.startedAt ? ' · ' + esc(duration(w.startedAt, w.finishedAt)) : ''}</div>
       </div>`).join('');
     const head = `<div class="row"><b>${esc(r.title || r.id)}</b>${roundPill(r)}</div>
-      <div class="small muted">${r.theme ? 'Theme: ' + esc(r.theme) + ' · ' : ''}updated ${esc(ago(r.updatedAt))}</div>
+      <div class="small muted">${loopLabel(r) ? esc(loopLabel(r)) + ' · ' : ''}${r.theme ? 'Theme: ' + esc(r.theme) + ' · ' : ''}updated ${esc(ago(r.updatedAt))}</div>
       ${r.note ? `<div class="small" style="margin-top:6px">${esc(r.note)}</div>` : ''}
       ${ws.length ? `<div class="progress"><i style="width:${pct}%"></i></div><div class="small muted">${done} of ${ws.length} workers finished</div>` : ''}`;
     // Open the newest round; older ones collapse.
@@ -331,6 +348,117 @@ function viewPipeline() {
   return html;
 }
 
+// Stages of a round's flowchart, top to bottom: each loop's scout findings
+// followed by the Innovator's routes for that loop. Past ideas sit with the
+// scout findings of the first loop whose routes use them, so lines stay short.
+function flowStages(r) {
+  const ideas = r.ideas || [], routes = r.routes || [];
+  const loopOf = x => parseInt(x.loop, 10) || 0;
+  const maxLoop = Math.max(1, ...ideas.map(loopOf), ...routes.map(loopOf));
+  const isPast = i => i.kind === 'past' || !loopOf(i);
+  const pastLoop = i => Math.min(maxLoop, ...routes.filter(x => (x.connects || []).includes(i.id)).map(x => loopOf(x) || 1));
+  const stages = [];
+  for (let L = 1; L <= maxLoop; L++) {
+    const found = ideas.filter(i => !isPast(i) && loopOf(i) === L);
+    const past = ideas.filter(i => isPast(i) && pastLoop(i) === L);
+    const rts = routes.filter(x => loopOf(x) === L)
+      .sort((a, b) => (PROMISE_ORDER[a.promise] ?? 3) - (PROMISE_ORDER[b.promise] ?? 3));
+    if (found.length || past.length) stages.push({
+      label: `Loop ${L} · ${found.length ? 'Scouts' : ''}${found.length && past.length ? ' + ' : ''}${past.length ? 'past ideas' : ''}`,
+      items: [...found, ...past].map(d => ({ type: 'idea', d }))
+    });
+    if (rts.length) stages.push({ label: `Loop ${L} · Innovator`, items: rts.map(d => ({ type: 'route', d })) });
+  }
+  return stages;
+}
+
+function flowChart(r, ri) {
+  const stages = flowStages(r);
+  if (!stages.length) return '<div class="empty">No findings mapped for this round yet.</div>';
+  // Screen minus the page gutter and the card's padding and border.
+  const W = Math.max(260, Math.min(document.documentElement.clientWidth, 720) - 62);
+  const COLS = 2, GAP = 10, NH = 62, HEAD = 22, BAND_GAP = 30;
+  const NW = (W - GAP * (COLS - 1)) / COLS;
+  const pos = {};
+  let y = 0, html = '';
+  for (const st of stages) {
+    html += `<div class="band" style="top:${y}px">${esc(st.label)}</div>`;
+    y += HEAD;
+    st.items.forEach((it, i) => {
+      const row = Math.floor(i / COLS), inRow = Math.min(COLS, st.items.length - row * COLS);
+      const x = (W - inRow * NW - (inRow - 1) * GAP) / 2 + (i % COLS) * (NW + GAP);
+      const top = y + row * (NH + GAP);
+      pos[it.type + ':' + it.d.id] = { x, y: top };
+      const d = it.d;
+      const cls = it.type === 'route' ? `route ${esc(d.decision || '')}` : d.kind === 'past' ? 'past' : '';
+      const meta = it.type === 'route'
+        ? [d.promise && d.promise + ' promise', d.decision === 'investigate' ? 'Investigating' : d.decision === 'dropped' ? 'Dropped' : 'Pending'].filter(Boolean).join(' · ')
+        : d.source || (d.kind === 'past' ? 'Past idea' : 'Scout');
+      html += `<button class="fnode ${cls}" style="left:${x}px;top:${top}px;width:${NW}px;height:${NH}px" data-flow="${ri}:${it.type}:${esc(d.id)}"><span class="l">${esc(d.label)}</span><span class="m">${esc(meta)}</span></button>`;
+    });
+    y += Math.ceil(st.items.length / COLS) * (NH + GAP) - GAP + BAND_GAP;
+  }
+  const H = y - BAND_GAP;
+  const edge = (a, b, cls) => {
+    if (!a || !b) return '';
+    const x1 = a.x + NW / 2, y1 = a.y + NH, x2 = b.x + NW / 2, y2 = b.y, k = Math.max(24, (y2 - y1) / 2);
+    return `<path class="edge ${cls}" d="M${x1},${y1} C${x1},${y1 + k} ${x2},${y2 - k} ${x2},${y2}"/>`;
+  };
+  let paths = '';
+  for (const rt of r.routes || []) {
+    for (const id of rt.connects || []) paths += edge(pos['idea:' + id], pos['route:' + rt.id], rt.decision === 'dropped' ? 'faded' : '');
+  }
+  for (const i of r.ideas || []) if (i.fromRoute) paths += edge(pos['route:' + i.fromRoute], pos['idea:' + i.id], 'lead');
+  return `<div class="flow" style="height:${H}px"><svg class="edges" width="${W}" height="${H}" aria-hidden="true">${paths}</svg>${html}</div>`;
+}
+
+function viewInnovation() {
+  const map = state.data?.innovation || { rounds: [] };
+  const rs = (map.rounds || []).filter(r => r && r.id);
+  if (map.error) return `<div class="empty">${esc(map.error)}</div>`;
+  if (!rs.length) return '<div class="empty">No innovation maps yet. Once a round runs the Innovator, a flowchart of which ideas were brought together, and where each route led, shows up here.</div>';
+  const ri = Math.max(0, rs.findIndex(r => r.id === state.innoRound));
+  const r = rs[ri];
+  const routes = r.routes || [];
+  const scope = r.scope === 'focused' ? 'Focused round: this round\'s ideas only' : r.scope === 'open' ? 'Open round: past ideas allowed' : '';
+  let html = rs.length > 1 ? `<div class="chips">${rs.map(x => `<button class="chip ${x.id === r.id ? 'active' : ''}" data-inno="${esc(x.id)}">${esc(x.title || x.id)}</button>`).join('')}</div>` : '';
+  html += `<div class="card"><div class="row"><b>${esc(r.title || r.id)}</b><span class="small muted">updated ${esc(ago(r.updatedAt))}</span></div>
+    <div class="small muted">${scope ? esc(scope) + ' · ' : ''}${(r.ideas || []).length} ideas · ${routes.length} routes · ${routes.filter(x => x.decision === 'investigate').length} investigated</div>
+    <div class="flow-legend"><span><i></i>Scout find</span><span><i class="past"></i>Past idea</span><span><i class="route"></i>Innovation route</span><span><i class="lead"></i>Scouts sent out</span></div>
+    ${flowChart(r, ri)}
+    <div class="small muted">Tap a box for details.</div></div>`;
+  return html;
+}
+
+function showFlowNode(key) {
+  const [ri, type, ...rest] = key.split(':');
+  const id = rest.join(':');
+  const r = (state.data?.innovation?.rounds || []).filter(x => x && x.id)[+ri];
+  if (!r) return;
+  const ideaById = Object.fromEntries((r.ideas || []).map(i => [i.id, i]));
+  const routeById = Object.fromEntries((r.routes || []).map(x => [x.id, x]));
+  const item = (label, sub) => `<div class="worker"><div>${esc(label)}</div>${sub ? `<div class="small muted">${esc(sub)}</div>` : ''}</div>`;
+  if (type === 'route') {
+    const rt = routeById[id];
+    if (!rt) return;
+    const led = (r.ideas || []).filter(i => i.fromRoute === id);
+    return openSheet(`<h3>${esc(rt.label)}</h3>
+      <div class="meta"><span class="tag">Loop ${esc(rt.loop)}</span>${rt.promise ? `<span class="tag">Promise: ${esc(rt.promise)}</span>` : ''}<span class="tag">${esc(rt.decision === 'investigate' ? 'Scouts sent out' : rt.decision === 'dropped' ? 'Dropped' : 'Pending')}</span></div>
+      ${rt.why ? `<p class="prose" style="color:var(--text)">${esc(rt.why)}</p>` : ''}
+      <h2>Brings together</h2>${(rt.connects || []).map(c => ideaById[c] ? item(ideaById[c].label, ideaById[c].source) : item(c)).join('') || '<p class="small muted">None listed.</p>'}
+      ${led.length ? `<h2>What the scouts found</h2>${led.map(i => item(i.label, i.summary || i.source)).join('')}` : ''}`);
+  }
+  const i = ideaById[id];
+  if (!i) return;
+  const usedBy = (r.routes || []).filter(x => (x.connects || []).includes(id));
+  const from = i.fromRoute && routeById[i.fromRoute];
+  openSheet(`<h3>${esc(i.label)}</h3>
+    <div class="meta"><span class="tag">${i.kind === 'past' ? 'Past idea' : 'Loop ' + esc(i.loop)}</span>${i.source ? `<span class="tag">${esc(i.source)}</span>` : ''}</div>
+    ${i.summary ? `<p class="prose" style="color:var(--text)">${esc(i.summary)}</p>` : ''}
+    ${from ? `<h2>Investigating the route</h2>${item(from.label, from.promise ? from.promise + ' promise' : '')}` : ''}
+    ${usedBy.length ? `<h2>Used in routes</h2>${usedBy.map(x => item(x.label, 'Loop ' + x.loop + (x.promise ? ' · ' + x.promise + ' promise' : ''))).join('')}` : ''}`);
+}
+
 function viewSettings() {
   const s = state.settings;
   return `<div class="card">
@@ -371,7 +499,7 @@ function viewSetup() {
 
 /* ---------- Render ---------- */
 
-const TITLES = { org: 'Org chart', research: 'Research', ideas: 'New ideas', pipeline: 'Pipeline', settings: 'Settings' };
+const TITLES = { org: 'Org chart', research: 'Research', innovation: 'Innovation', ideas: 'New ideas', pipeline: 'Pipeline', settings: 'Settings' };
 
 function renderSync() {
   const el = $('#sync');
@@ -392,7 +520,7 @@ function render() {
   if (tab === 'settings') html = viewSettings();
   else if (!state.token && !state.data) html = viewSetup();
   else if (!state.data) html = '<div class="empty">Loading…</div>';
-  else html = { org: viewOrg, research: viewResearch, ideas: viewIdeas, pipeline: viewPipeline }[tab]();
+  else html = { org: viewOrg, research: viewResearch, innovation: viewInnovation, ideas: viewIdeas, pipeline: viewPipeline }[tab]();
   // Keep expanded sections open across the 30-second refreshes.
   const open = new Set([...document.querySelectorAll('#view details[open]')].map(d => d.dataset.k));
   $('#view').innerHTML = html;
@@ -452,6 +580,10 @@ document.addEventListener('click', e => {
   if (go) { state.tab = go.dataset.goto; store.set('tab', state.tab); render(); return; }
   const agent = e.target.closest('[data-agent]');
   if (agent) return showAgent(agent.dataset.agent);
+  const flow = e.target.closest('[data-flow]');
+  if (flow) return showFlowNode(flow.dataset.flow);
+  const inno = e.target.closest('[data-inno]');
+  if (inno) { state.innoRound = inno.dataset.inno; store.set('innoRound', state.innoRound); render(); return; }
   const idea = e.target.closest('[data-idea]');
   if (idea) return showIdea(+idea.dataset.idea);
   const chip = e.target.closest('[data-filter]');
@@ -484,6 +616,13 @@ document.addEventListener('change', e => {
 });
 
 $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') e.target.close(); });
+
+// The flowchart is laid out in pixels, so redraw it when the screen rotates.
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (state.tab === 'innovation') render(); }, 150);
+});
 
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);

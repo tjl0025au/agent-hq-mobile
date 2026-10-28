@@ -1,6 +1,6 @@
 // Caches the app shell so Agent HQ opens offline. GitHub data is never cached
 // here; the app keeps the last data it saw in localStorage instead.
-const CACHE = 'ahq-v1';
+const CACHE = 'ahq-v3';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
