@@ -15,6 +15,9 @@ in that phone's browser.
 - **Research**: live and past rounds from `status/live.json`, which loop of the
   scout → innovator loop each round is on (e.g. "Loop 2 of 3"), and each worker's
   direction, state and best find. Rounds not updated for 45 minutes show "Stalled?".
+- **Innovation**: a flowchart per round from `research/innovation-map.json`: each
+  loop's scout finds, the Innovator's routes that bring them together (plus past ideas
+  in open rounds), and which routes the scouts were sent back out on. Tap a box for details.
 - **New ideas**: opportunities from `research/ideas-log.md` (New, latest round, or all),
   plus the directions explored so far.
 - **Pipeline**: every opportunity grouped by status.
